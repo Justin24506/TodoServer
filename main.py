@@ -53,20 +53,20 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.get("/todos", response_model=List[Todo])
 async def get_todos(session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # selectinload ensures subTasks are included in the result
+    # .options(selectinload(Todo.subTasks)) tells SQLModel to grab the children immediately
     statement = select(Todo).options(selectinload(Todo.subTasks))
-    results = session.exec(statement).all()
-    return results
+    return session.exec(statement).all()
 
 @app.get("/todos/{todo_id}", response_model=Todo)
 async def get_todo(todo_id: int, session: Session = Depends(get_session)):
-    # We use a select statement here instead of session.get to allow for eager loading
+    # For a single item, we use the same loading strategy
     statement = select(Todo).where(Todo.id == todo_id).options(selectinload(Todo.subTasks))
     todo = session.exec(statement).first()
 
     if not todo:
         raise HTTPException(status_code=404, detail="Todo not found")
     return todo
+
 @app.post("/todos")
 async def add_todo(todo_input: TodoCreate, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     try:
