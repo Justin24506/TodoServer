@@ -10,49 +10,38 @@ from enum import Enum
 from sqlmodel import SQLModel, Field, Relationship, Column
 from sqlalchemy import JSON
 
-# 1. Define Priority Enum to match 'High' | 'Medium' | 'Low' | null
-class Priority(str, Enum):
-    HIGH = "High"
-    MEDIUM = "Medium"
-    LOW = "Low"
-
-class SubTask(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
+class SubTaskBase(SQLModel):
     task: str
     completed: bool = False
 
-    # Link to Todo
+class SubTask(SubTaskBase, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
     todo_id: Optional[int] = Field(default=None, foreign_key="todo.id")
     todo: Optional["Todo"] = Relationship(back_populates="subTasks")
 
-class Todo(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
+class TodoBase(SQLModel):
     task: str
     completed: bool = False
-
-    # Matching TypeScript: priority?: Priority
-    priority: Optional[Priority] = Field(default=None)
-
-    # Matching TypeScript: dueDate?: string | null
+    priority: Optional[str] = "Medium"
     dueDate: Optional[str] = None
-
-    # Matching TypeScript: startDate?: Date | string | null
     startDate: Optional[str] = None
-
-    # Matching TypeScript: Notes?: string[] (Note the Capital 'N')
-    Notes: List[str] = Field(default=[], sa_column=Column(JSON))
-
-    # Matching TypeScript: remindMe?: boolean | null
-    remindMe: Optional[bool] = False
-
-    # Matching TypeScript: reminderDate?: Date | string | null
+    Notes: List[str] = Field(default=[]) # No sa_column here
+    remindMe: bool = False
     reminderDate: Optional[str] = None
 
-    # Relationship name must match 'subTasks' in your Interface
+class Todo(TodoBase, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # We add the DB-specific field here
+    Notes: List[str] = Field(default=[], sa_column=Column(JSON))
+
     subTasks: List[SubTask] = Relationship(
         back_populates="todo",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan", "lazy": "selectin"}
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
+
+# THIS IS THE KEY: A separate class for incoming data
+class TodoCreate(TodoBase):
+    subTasks: Optional[List[SubTaskBase]] = None
 
 class ErrorLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

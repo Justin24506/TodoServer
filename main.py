@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, create_engine, select
-from models import Todo, SubTask, ErrorLog, SQLModel # Assumes models.py exists
+from models import Todo, SubTask, TodoCreate, ErrorLog, SQLModel
 
 # --- 1. Database & Security Config ---
 DATABASE_URL = os.getenv("POSTGRES_URL", "postgresql://user:pass@localhost/dbname").replace("postgres://", "postgresql://", 1)
@@ -50,10 +50,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": form_data.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- 4. Todo Routes (Migration of your JSON logic) ---
-
-# --- 4. Todo Routes ---
-
 @app.get("/todos", response_model=List[Todo])
 async def get_todos(session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     # SQLModel automatically fetches subTasks because of the relationship
@@ -67,10 +63,9 @@ async def get_todo(todo_id: int, session: Session = Depends(get_session)):
     return todo
 
 @app.post("/todos")
-async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+async def add_todo(todo_input: TodoCreate, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     try:
-        # 1. Create a fresh Todo instance and copy fields manually
-        # to avoid sending 'id' or 'subTasks' to the constructor
+        # 1. Create the DB version of the Todo
         db_todo = Todo(
             task=todo_input.task,
             completed=todo_input.completed,
@@ -86,67 +81,51 @@ async def add_todo(todo_input: Todo, session: Session = Depends(get_session), to
         session.commit()
         session.refresh(db_todo)
 
-        # 2. Add subtasks if they exist in the input
+        # 2. Handle subtasks separately
         if todo_input.subTasks:
             for st in todo_input.subTasks:
                 new_subtask = SubTask(
                     task=st.task,
                     completed=st.completed,
-                    todo_id=db_todo.id # Link to the newly created parent ID
+                    todo_id=db_todo.id
                 )
                 session.add(new_subtask)
-
             session.commit()
             session.refresh(db_todo)
 
         return db_todo
-
     except Exception as e:
         session.rollback()
-        print(f"DATABASE ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/todos/{todo_id}")
-async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+async def update_todo(todo_id: int, updated_todo: TodoCreate, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     db_todo = session.get(Todo, todo_id)
     if not db_todo:
         raise HTTPException(status_code=404, detail="Todo not found")
 
     try:
-        # Update main fields
-        db_todo.task = updated_todo.task
-        db_todo.completed = updated_todo.completed
-        db_todo.priority = updated_todo.priority
-        db_todo.dueDate = updated_todo.dueDate
-        db_todo.startDate = updated_todo.startDate
-        db_todo.Notes = updated_todo.Notes
-        db_todo.remindMe = updated_todo.remindMe
-        db_todo.reminderDate = updated_todo.reminderDate
+        # Update fields
+        for key, value in updated_todo.model_dump(exclude={"subTasks"}).items():
+            setattr(db_todo, key, value)
 
-        # Handle SubTasks (Sync approach: delete and recreate)
+        # Sync Subtasks
         if updated_todo.subTasks is not None:
-            # Delete old ones
+            # Delete old
             for old_st in db_todo.subTasks:
                 session.delete(old_st)
 
-            # Add new ones
+            # Add new
             for st in updated_todo.subTasks:
-                new_st = SubTask(
-                    task=st.task,
-                    completed=st.completed,
-                    todo_id=db_todo.id
-                )
-                session.add(new_st)
+                session.add(SubTask(task=st.task, completed=st.completed, todo_id=db_todo.id))
 
         session.add(db_todo)
         session.commit()
         session.refresh(db_todo)
         return db_todo
-
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # @app.post("/todos")
 # async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
