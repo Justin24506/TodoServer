@@ -95,8 +95,49 @@ async def add_todo(todo_input: Todo, session: Session = Depends(get_session), to
 
         return db_todo
     except Exception as e:
+        import traceback
+        print(traceback.format_exc()) # THIS REVEALS THE ERROR IN VERCEL LOGS
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# @app.post("/todos")
+# async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+#     try:
+#         # 1. Take the subtasks out of the incoming data
+#         # We use .dict() or .model_dump() to get the raw data
+#         incoming_data = todo_input.model_dump()
+#         raw_subtasks = incoming_data.pop("subTasks", [])
+#
+#         # 2. Create Todo without the subtasks list and without the ID
+#         if "id" in incoming_data: del incoming_data["id"]
+#
+#         db_todo = Todo(**incoming_data)
+#         session.add(db_todo)
+#         session.commit() # Save parent to generate db_todo.id
+#         session.refresh(db_todo)
+#
+#         # 3. If there are subtasks, create them manually
+#         if raw_subtasks:
+#             for st_data in raw_subtasks:
+#                 # Remove the ID from subtask if Angular sent one (like 0 or null)
+#                 if "id" in st_data: del st_data["id"]
+#
+#                 new_st = SubTask(
+#                     task=st_data["task"],
+#                     completed=st_data["completed"],
+#                     todo_id=db_todo.id # Explicitly link to parent
+#                 )
+#                 session.add(new_st)
+#
+#             session.commit()
+#             session.refresh(db_todo)
+#
+#         return db_todo
+#     except Exception as e:
+#         session.rollback()
+#         print(f"CRITICAL ERROR: {str(e)}") # Check Vercel Logs!
+#         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
 @app.put("/todos/{todo_id}")
 async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
