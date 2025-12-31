@@ -1,0 +1,25 @@
+# --- Secrets & Data ---
+.env
+.env.*
+db.json
+
+# --- Python & Virtual Environments ---
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+.Python
+
+# --- IDEs (PyCharm / IntelliJ / VS Code) ---
+.idea/
+*.iml
+TodoServer.iml
+.vscode/
+
+# --- Vercel & Logs ---
+.vercel/
+*.log
+
+# --- Local Test Files ---
+test_main.http
