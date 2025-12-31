@@ -28,3 +28,11 @@ class Todo(SQLModel, table=True):
         back_populates="todo",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
+
+class ErrorLog(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message: str
+    stack: Optional[str] = None
+    url: str
+    level: str = "Error"  # Default to Error
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
