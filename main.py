@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, create_engine, select
 from models import Todo, SubTask, TodoCreate, ErrorLog, SQLModel
+from sqlalchemy.orm import selectinload
 
 # --- 1. Database & Security Config ---
 DATABASE_URL = os.getenv("POSTGRES_URL", "postgresql://user:pass@localhost/dbname").replace("postgres://", "postgresql://", 1)
@@ -52,16 +53,20 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.get("/todos", response_model=List[Todo])
 async def get_todos(session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # SQLModel automatically fetches subTasks because of the relationship
-    return session.exec(select(Todo)).all()
+    # selectinload ensures subTasks are included in the result
+    statement = select(Todo).options(selectinload(Todo.subTasks))
+    results = session.exec(statement).all()
+    return results
 
 @app.get("/todos/{todo_id}", response_model=Todo)
 async def get_todo(todo_id: int, session: Session = Depends(get_session)):
-    todo = session.get(Todo, todo_id)
+    # We use a select statement here instead of session.get to allow for eager loading
+    statement = select(Todo).where(Todo.id == todo_id).options(selectinload(Todo.subTasks))
+    todo = session.exec(statement).first()
+
     if not todo:
         raise HTTPException(status_code=404, detail="Todo not found")
     return todo
-
 @app.post("/todos")
 async def add_todo(todo_input: TodoCreate, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     try:
@@ -180,31 +185,38 @@ async def delete_todo(todo_id: int, session: Session = Depends(get_session), tok
 
 @app.post("/todos/bulk-delete")
 async def bulk_delete(ids: List[int], session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # Select all todos in the ID list
-    statement = select(Todo).where(Todo.id.in_(ids))
+    statement = select(Todo).where(Todo.id.in_(ids)).options(selectinload(Todo.subTasks))
     results = session.exec(statement).all()
 
+    if not results:
+        return {"message": "No tasks found to delete"}
+
     for todo in results:
+        # The database relationship usually handles subtask deletion,
+        # but we delete the parent here explicitly.
         session.delete(todo)
 
     session.commit()
-    return {"message": f"Deleted {len(results)} tasks"}
+    return {"message": f"Deleted {len(results)} tasks and associated subtasks"}
 
 @app.post("/todos/bulk-status")
 async def bulk_status(payload: dict, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # Expects JSON like: {"ids": [1, 2, 3], "completed": true}
     ids = payload.get("ids", [])
     completed_val = payload.get("completed", False)
 
-    statement = select(Todo).where(Todo.id.in_(ids))
+    # Fetch todos with their subtasks
+    statement = select(Todo).where(Todo.id.in_(ids)).options(selectinload(Todo.subTasks))
     results = session.exec(statement).all()
 
     for todo in results:
         todo.completed = completed_val
+        # Also update all associated subtasks to match
+        for sub in todo.subTasks:
+            sub.completed = completed_val
         session.add(todo)
 
     session.commit()
-    return {"message": f"Updated {len(results)} tasks"}
+    return {"message": f"Updated {len(results)} tasks and their subtasks"}
 
 # --- 5. Logs Route ---
 @app.post("/logs")
