@@ -51,7 +51,7 @@ class Todo(SQLModel, table=True):
     # Relationship name must match 'subTasks' in your Interface
     subTasks: List[SubTask] = Relationship(
         back_populates="todo",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "lazy": "selectin"}
     )
 
 class ErrorLog(SQLModel, table=True):
