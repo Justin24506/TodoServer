@@ -69,24 +69,30 @@ async def get_todo(todo_id: int, session: Session = Depends(get_session)):
 @app.post("/todos")
 async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
     try:
-        # 1. Extract subtasks for separate handling
-        subtask_data = todo_input.subTasks
-
-        # 2. Create the parent Todo (exclude subTasks and id)
-        todo_dict = todo_input.model_dump(exclude={"subTasks", "id"})
-        db_todo = Todo(**todo_dict)
+        # 1. Create a fresh Todo instance and copy fields manually
+        # to avoid sending 'id' or 'subTasks' to the constructor
+        db_todo = Todo(
+            task=todo_input.task,
+            completed=todo_input.completed,
+            priority=todo_input.priority,
+            dueDate=todo_input.dueDate,
+            startDate=todo_input.startDate,
+            Notes=todo_input.Notes,
+            remindMe=todo_input.remindMe,
+            reminderDate=todo_input.reminderDate
+        )
 
         session.add(db_todo)
         session.commit()
         session.refresh(db_todo)
 
-        # 3. If subtasks exist, link them to the new ID and save
-        if subtask_data:
-            for st in subtask_data:
+        # 2. Add subtasks if they exist in the input
+        if todo_input.subTasks:
+            for st in todo_input.subTasks:
                 new_subtask = SubTask(
                     task=st.task,
                     completed=st.completed,
-                    todo_id=db_todo.id
+                    todo_id=db_todo.id # Link to the newly created parent ID
                 )
                 session.add(new_subtask)
 
@@ -94,9 +100,50 @@ async def add_todo(todo_input: Todo, session: Session = Depends(get_session), to
             session.refresh(db_todo)
 
         return db_todo
+
     except Exception as e:
-        import traceback
-        print(traceback.format_exc()) # THIS REVEALS THE ERROR IN VERCEL LOGS
+        session.rollback()
+        print(f"DATABASE ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/todos/{todo_id}")
+async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+    db_todo = session.get(Todo, todo_id)
+    if not db_todo:
+        raise HTTPException(status_code=404, detail="Todo not found")
+
+    try:
+        # Update main fields
+        db_todo.task = updated_todo.task
+        db_todo.completed = updated_todo.completed
+        db_todo.priority = updated_todo.priority
+        db_todo.dueDate = updated_todo.dueDate
+        db_todo.startDate = updated_todo.startDate
+        db_todo.Notes = updated_todo.Notes
+        db_todo.remindMe = updated_todo.remindMe
+        db_todo.reminderDate = updated_todo.reminderDate
+
+        # Handle SubTasks (Sync approach: delete and recreate)
+        if updated_todo.subTasks is not None:
+            # Delete old ones
+            for old_st in db_todo.subTasks:
+                session.delete(old_st)
+
+            # Add new ones
+            for st in updated_todo.subTasks:
+                new_st = SubTask(
+                    task=st.task,
+                    completed=st.completed,
+                    todo_id=db_todo.id
+                )
+                session.add(new_st)
+
+        session.add(db_todo)
+        session.commit()
+        session.refresh(db_todo)
+        return db_todo
+
+    except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -139,43 +186,6 @@ async def add_todo(todo_input: Todo, session: Session = Depends(get_session), to
 #         print(f"CRITICAL ERROR: {str(e)}") # Check Vercel Logs!
 #         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
-@app.put("/todos/{todo_id}")
-async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    db_todo = session.get(Todo, todo_id)
-    if not db_todo:
-        raise HTTPException(status_code=404, detail="Todo not found")
-
-    try:
-        # 1. Update main Todo fields (skip id and subTasks)
-        todo_data = updated_todo.model_dump(exclude={"subTasks", "id"}, exclude_unset=True)
-        for key, value in todo_data.items():
-            setattr(db_todo, key, value)
-
-        # 2. Sync SubTasks: The "Clean Slate" approach
-        if updated_todo.subTasks is not None:
-            # Delete all current subtasks linked to this todo
-            for existing_st in db_todo.subTasks:
-                session.delete(existing_st)
-
-            # Flush deletes before adding new ones
-            session.flush()
-
-            # Add the new list of subtasks
-            for st in updated_todo.subTasks:
-                new_st = SubTask(
-                    task=st.task,
-                    completed=st.completed,
-                    todo_id=db_todo.id
-                )
-                session.add(new_st)
-
-        session.add(db_todo)
-        session.commit()
-        session.refresh(db_todo)
-        return db_todo
-    except Exception as e:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/todos/{todo_id}")
 async def delete_todo(todo_id: int, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
