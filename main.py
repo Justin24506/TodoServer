@@ -52,9 +52,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 # --- 4. Todo Routes (Migration of your JSON logic) ---
 
+# --- 4. Todo Routes ---
+
 @app.get("/todos", response_model=List[Todo])
 async def get_todos(session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # SQLModel relationship handles subTasks automatically
+    # SQLModel automatically fetches subTasks because of the relationship
     return session.exec(select(Todo)).all()
 
 @app.get("/todos/{todo_id}", response_model=Todo)
@@ -66,33 +68,35 @@ async def get_todo(todo_id: int, session: Session = Depends(get_session)):
 
 @app.post("/todos")
 async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # 1. Extract subtasks from the incoming data
-    subtask_data = todo_input.subTasks
+    try:
+        # 1. Extract subtasks for separate handling
+        subtask_data = todo_input.subTasks
 
-    # 2. Create the Todo object WITHOUT subtasks first
-    # We exclude 'subTasks' and 'id' to create a clean parent record
-    todo_dict = todo_input.model_dump(exclude={"subTasks", "id"})
-    db_todo = Todo(**todo_dict)
+        # 2. Create the parent Todo (exclude subTasks and id)
+        todo_dict = todo_input.model_dump(exclude={"subTasks", "id"})
+        db_todo = Todo(**todo_dict)
 
-    session.add(db_todo)
-    session.commit() # This saves the Todo and generates the ID
-    session.refresh(db_todo) # Now db_todo.id exists!
-
-    # 3. Create and link SubTasks if they exist
-    if subtask_data:
-        for st in subtask_data:
-            # Create a real SubTask object and link it to the new Todo ID
-            new_subtask = SubTask(
-                task=st.task,
-                completed=st.completed,
-                todo_id=db_todo.id
-            )
-            session.add(new_subtask)
-
+        session.add(db_todo)
         session.commit()
-        session.refresh(db_todo) # Refresh again to include the subtasks in the response
+        session.refresh(db_todo)
 
-    return db_todo
+        # 3. If subtasks exist, link them to the new ID and save
+        if subtask_data:
+            for st in subtask_data:
+                new_subtask = SubTask(
+                    task=st.task,
+                    completed=st.completed,
+                    todo_id=db_todo.id
+                )
+                session.add(new_subtask)
+
+            session.commit()
+            session.refresh(db_todo)
+
+        return db_todo
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/todos/{todo_id}")
 async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
@@ -100,27 +104,37 @@ async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depen
     if not db_todo:
         raise HTTPException(status_code=404, detail="Todo not found")
 
-    # Update main Todo fields
-    todo_data = updated_todo.model_dump(exclude={"subTasks", "id"}, exclude_unset=True)
-    for key, value in todo_data.items():
-        setattr(db_todo, key, value)
+    try:
+        # 1. Update main Todo fields (skip id and subTasks)
+        todo_data = updated_todo.model_dump(exclude={"subTasks", "id"}, exclude_unset=True)
+        for key, value in todo_data.items():
+            setattr(db_todo, key, value)
 
-    # Simple SubTask sync: Delete old ones and add new ones
-    # (This is the fastest way to handle updates for a simple app)
-    if updated_todo.subTasks is not None:
-        # Delete existing subtasks
-        for existing_st in db_todo.subTasks:
-            session.delete(existing_st)
+        # 2. Sync SubTasks: The "Clean Slate" approach
+        if updated_todo.subTasks is not None:
+            # Delete all current subtasks linked to this todo
+            for existing_st in db_todo.subTasks:
+                session.delete(existing_st)
 
-        # Add new ones
-        for st in updated_todo.subTasks:
-            new_st = SubTask(task=st.task, completed=st.completed, todo_id=db_todo.id)
-            session.add(new_st)
+            # Flush deletes before adding new ones
+            session.flush()
 
-    session.add(db_todo)
-    session.commit()
-    session.refresh(db_todo)
-    return db_todo
+            # Add the new list of subtasks
+            for st in updated_todo.subTasks:
+                new_st = SubTask(
+                    task=st.task,
+                    completed=st.completed,
+                    todo_id=db_todo.id
+                )
+                session.add(new_st)
+
+        session.add(db_todo)
+        session.commit()
+        session.refresh(db_todo)
+        return db_todo
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/todos/{todo_id}")
 async def delete_todo(todo_id: int, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
@@ -130,7 +144,37 @@ async def delete_todo(todo_id: int, session: Session = Depends(get_session), tok
 
     session.delete(todo)
     session.commit()
-    return {"message": "Deleted"}
+    return {"message": "Deleted successfully"}
+
+# --- Bulk Actions (For your Floating Toolbar) ---
+
+@app.post("/todos/bulk-delete")
+async def bulk_delete(ids: List[int], session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+    # Select all todos in the ID list
+    statement = select(Todo).where(Todo.id.in_(ids))
+    results = session.exec(statement).all()
+
+    for todo in results:
+        session.delete(todo)
+
+    session.commit()
+    return {"message": f"Deleted {len(results)} tasks"}
+
+@app.post("/todos/bulk-status")
+async def bulk_status(payload: dict, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+    # Expects JSON like: {"ids": [1, 2, 3], "completed": true}
+    ids = payload.get("ids", [])
+    completed_val = payload.get("completed", False)
+
+    statement = select(Todo).where(Todo.id.in_(ids))
+    results = session.exec(statement).all()
+
+    for todo in results:
+        todo.completed = completed_val
+        session.add(todo)
+
+    session.commit()
+    return {"message": f"Updated {len(results)} tasks"}
 
 # --- 5. Logs Route ---
 @app.post("/logs")
