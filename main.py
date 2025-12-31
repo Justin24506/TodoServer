@@ -65,12 +65,34 @@ async def get_todo(todo_id: int, session: Session = Depends(get_session)):
     return todo
 
 @app.post("/todos")
-async def add_todo(todo_data: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
-    # Postgres handles ID incrementing automatically (no need to max(ids) + 1)
-    session.add(todo_data)
-    session.commit()
-    session.refresh(todo_data)
-    return todo_data
+async def add_todo(todo_input: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
+    # 1. Extract subtasks from the incoming data
+    subtask_data = todo_input.subTasks
+
+    # 2. Create the Todo object WITHOUT subtasks first
+    # We exclude 'subTasks' and 'id' to create a clean parent record
+    todo_dict = todo_input.model_dump(exclude={"subTasks", "id"})
+    db_todo = Todo(**todo_dict)
+
+    session.add(db_todo)
+    session.commit() # This saves the Todo and generates the ID
+    session.refresh(db_todo) # Now db_todo.id exists!
+
+    # 3. Create and link SubTasks if they exist
+    if subtask_data:
+        for st in subtask_data:
+            # Create a real SubTask object and link it to the new Todo ID
+            new_subtask = SubTask(
+                task=st.task,
+                completed=st.completed,
+                todo_id=db_todo.id
+            )
+            session.add(new_subtask)
+
+        session.commit()
+        session.refresh(db_todo) # Refresh again to include the subtasks in the response
+
+    return db_todo
 
 @app.put("/todos/{todo_id}")
 async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depends(get_session), token: str = Depends(oauth2_scheme)):
@@ -78,10 +100,22 @@ async def update_todo(todo_id: int, updated_todo: Todo, session: Session = Depen
     if not db_todo:
         raise HTTPException(status_code=404, detail="Todo not found")
 
-    # Update fields from the request
-    todo_data = updated_todo.dict(exclude_unset=True)
+    # Update main Todo fields
+    todo_data = updated_todo.model_dump(exclude={"subTasks", "id"}, exclude_unset=True)
     for key, value in todo_data.items():
         setattr(db_todo, key, value)
+
+    # Simple SubTask sync: Delete old ones and add new ones
+    # (This is the fastest way to handle updates for a simple app)
+    if updated_todo.subTasks is not None:
+        # Delete existing subtasks
+        for existing_st in db_todo.subTasks:
+            session.delete(existing_st)
+
+        # Add new ones
+        for st in updated_todo.subTasks:
+            new_st = SubTask(task=st.task, completed=st.completed, todo_id=db_todo.id)
+            session.add(new_st)
 
     session.add(db_todo)
     session.commit()
