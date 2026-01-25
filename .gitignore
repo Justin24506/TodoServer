@@ -10,6 +10,7 @@ env/
 # Databases
 *.db
 db.json
+backups/
 
 # Python cache
 __pycache__/
