@@ -1,0 +1,16 @@
+# IDE Settings
+.idea/
+*.iml
+
+# Environment and Secrets
+.env
+.venv/
+env/
+
+# Databases
+*.db
+db.json
+
+# Python cache
+__pycache__/
+*.py[cod]
